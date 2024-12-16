@@ -21,19 +21,21 @@ const DELIMITER: char = '-';
 
 type Utf32 = Vec<char>;
 
-/// Encode Unicode as Punycode.
+/// Encodes Unicode as Punycode.
 ///
 /// Overflow may occur if `input` is longer than 63 characters.
 /// Overflow may result in invalid output, but will never result in Undefined Behavior.
 ///
-/// # Example
+/// # Examples
+///
 /// ```
-/// # use owen_idna::punycode;
+/// # use edna::punycode;
 /// assert_eq!(punycode::encode("München"), "Mnchen-3ya");
 /// ```
+#[must_use]
+#[allow(clippy::cast_possible_truncation)]
 pub fn encode(input: &str) -> String {
     let input = input.chars().collect::<Utf32>();
-    let input_len = input.len() as u32;
 
     let mut output = input.iter().filter(|x| x.is_ascii()).collect::<String>();
     let basic_len = output.len() as u32;
@@ -47,7 +49,7 @@ pub fn encode(input: &str) -> String {
     let mut bias = INITIAL_BIAS;
     let mut processed = basic_len;
 
-    while processed < input_len {
+    while processed < input.len() as u32 {
         let min_cp = *input.iter().filter(|&c| *c as u32 >= cp).min().unwrap() as u32;
         delta += (min_cp - cp) * (processed + 1);
         cp = min_cp;
@@ -57,22 +59,16 @@ pub fn encode(input: &str) -> String {
                 Ordering::Less => delta += 1,
                 Ordering::Equal => {
                     let mut q = delta;
-                    let mut k = BASE;
-                    loop {
-                        let t = if k <= bias {
-                            T_MIN
-                        } else if k >= bias + T_MAX {
-                            T_MAX
-                        } else {
-                            k - bias
-                        };
+                    for k in (BASE..).step_by(BASE as usize) {
+                        let t = clamped_sub(k, bias);
+
                         if q < t {
                             break;
                         }
+
                         let value = t + ((q - t) % (BASE - t));
                         output.push(encode_digit(value));
                         q = (q - t) / (BASE - t);
-                        k += BASE;
                     }
                     output.push(encode_digit(q));
                     bias = adapt(delta, processed + 1, processed == basic_len);
@@ -89,21 +85,27 @@ pub fn encode(input: &str) -> String {
     output
 }
 
-/// Decode Punycode to Unicode.
+/// Decodes Punycode to Unicode.
 ///
-/// Overflow may occur if `input` is longer than 63 characters.
-/// Overflow may result in invalid output, but will never result in Undefined Behavior.
+/// # Errors
 ///
-/// # Example
+/// This function will return an error if:
+/// - Overflow has occured.
+/// - `input` is not ASCII.
+/// - An invalid Punycode sequence was encountered.
+///
+/// # Examples
+///
 /// ```
-/// # use owen_idna::punycode;
+/// # use edna::punycode;
 /// assert_eq!(punycode::decode("Mnchen-3ya"), Ok(String::from("München")));
 /// ```
+#[allow(clippy::cast_possible_truncation)]
 pub fn decode(input: &str) -> Result<String, PunyDecodeError> {
-    let (mut output, mut encoded) = input
-        .rsplit_once('-')
-        .map(|(l, r)| (l.chars().collect::<Utf32>(), r.chars()))
-        .unwrap_or((Utf32::with_capacity(input.len()), input.chars()));
+    let (mut output, mut encoded) = input.rsplit_once('-').map_or_else(
+        || (Utf32::new(), input.chars()),
+        |(l, r)| (l.chars().collect::<Utf32>(), r.chars()),
+    );
 
     let mut cp = INITIAL_N;
     let mut i: u32 = 0;
@@ -112,19 +114,14 @@ pub fn decode(input: &str) -> Result<String, PunyDecodeError> {
     while let Some(mut byte) = encoded.next() {
         let old_i = i;
         let mut weight = 1;
+
         for k in (BASE..).step_by(BASE as usize) {
             let digit = decode_digit(byte).ok_or(PunyDecodeError::NonAscii)?;
 
             let product = digit.checked_mul(weight).ok_or(PunyDecodeError::Overflow)?;
             i = i.checked_add(product).ok_or(PunyDecodeError::Overflow)?;
 
-            let t = if k <= bias {
-                T_MIN
-            } else if k >= bias + T_MAX {
-                T_MAX
-            } else {
-                k - bias
-            };
+            let t = clamped_sub(k, bias);
 
             if digit < t {
                 break;
@@ -140,7 +137,8 @@ pub fn decode(input: &str) -> Result<String, PunyDecodeError> {
             .checked_add(i / (output.len() as u32 + 1))
             .ok_or(PunyDecodeError::Overflow)?;
         i %= output.len() as u32 + 1;
-        let c = char::from_u32(cp).ok_or(PunyDecodeError::InvalidCodePoint)?;
+        let c = char::from_u32(cp).unwrap();
+        //let c = char::from_u32(cp).ok_or(PunyDecodeError::InvalidCodePoint)?;
         output.insert(i as usize, c);
         i += 1;
     }
@@ -148,26 +146,31 @@ pub fn decode(input: &str) -> Result<String, PunyDecodeError> {
     Ok(output.into_iter().collect::<String>())
 }
 
-/// Decode Punycode to Unicode without input validation.
+/// Decodes Punycode to Unicode without input validation.
 ///
-/// `input` must never overflow, that is to say, no code points should exceed `(M - INITIAL_N) * (L
-/// + 1)`. For more information, see RFC 3492.
+/// # Safety
+///
+/// `input` must never overflow, that is to say, no code points should exceed
+/// `(M - INITIAL_N) * (L + 1)`. For more information, see RFC 3492.
 ///
 /// Failure to uphold these invariants may result in **Undefined Behavior**.
 ///
-/// # Example
+/// # Examples
+///
 /// ```
-/// # use owen_idna::punycode;
+/// # use edna::punycode;
 /// # unsafe {
 /// assert_eq!(punycode::decode_unchecked("Mnchen-3ya"), "München");
 /// # }
 /// ```
 #[cfg(not(feature = "forbid-unsafe"))]
+#[allow(clippy::cast_possible_truncation)]
+#[must_use]
 pub unsafe fn decode_unchecked(input: &str) -> String {
-    let (mut output, mut encoded) = input
-        .rsplit_once('-')
-        .map(|(l, r)| (l.chars().collect::<Utf32>(), r.chars()))
-        .unwrap_or((Utf32::with_capacity(input.len()), input.chars()));
+    let (mut output, mut encoded) = input.rsplit_once('-').map_or_else(
+        || (Utf32::new(), input.chars()),
+        |(l, r)| (l.chars().collect::<Utf32>(), r.chars()),
+    );
 
     let mut cp = INITIAL_N;
     let mut i: u32 = 0;
@@ -176,18 +179,13 @@ pub unsafe fn decode_unchecked(input: &str) -> String {
     while let Some(mut byte) = encoded.next() {
         let old_i = i;
         let mut weight = 1;
+
         for k in (BASE..).step_by(BASE as usize) {
             let digit = decode_digit(byte).unwrap_unchecked();
 
             i += digit * weight;
 
-            let t = if k <= bias {
-                T_MIN
-            } else if k >= bias + T_MAX {
-                T_MAX
-            } else {
-                k - bias
-            };
+            let t = clamped_sub(k, bias);
 
             if digit < t {
                 break;
@@ -215,8 +213,8 @@ pub enum PunyDecodeError {
     InvalidSequence,
     #[error("overflow")]
     Overflow,
-    #[error("invalid code point")]
-    InvalidCodePoint,
+    //#[error("invalid code point")]
+    //InvalidCodePoint,
 }
 
 #[inline]
@@ -240,6 +238,7 @@ const fn encode_digit(d: u32) -> char {
 }
 
 #[inline]
+#[must_use]
 const fn decode_digit(c: char) -> Option<u32> {
     match c {
         '0'..='9' => Some((c as u8 - b'0' + 26) as u32),
@@ -250,15 +249,28 @@ const fn decode_digit(c: char) -> Option<u32> {
 }
 
 #[inline]
+#[must_use]
 const fn adapt(mut delta: u32, num_points: u32, first_time: bool) -> u32 {
     delta /= if first_time { DAMP } else { 2 };
     delta += delta / num_points;
     let mut k = 0;
-    while delta > ((BASE - T_MIN) * T_MAX) / 2 {
+    while delta > (BASE - T_MIN) * T_MAX / 2 {
         delta /= BASE - T_MIN;
         k += BASE;
     }
-    k + (((BASE - T_MIN + 1) * delta) / (delta + SKEW))
+    k + (BASE - T_MIN + 1) * delta / (delta + SKEW)
+}
+
+#[inline]
+#[must_use]
+const fn clamped_sub(k: u32, bias: u32) -> u32 {
+    if k <= bias {
+        T_MIN
+    } else if k >= bias + T_MAX {
+        T_MAX
+    } else {
+        k - bias
+    }
 }
 
 #[cfg(test)]
