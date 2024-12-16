@@ -75,7 +75,7 @@ pub fn encode(input: &str) -> String {
                     delta = 0;
                     processed += 1;
                 }
-                Ordering::Greater => {}
+                Ordering::Greater => (),
             }
         }
         delta += 1;
@@ -89,7 +89,6 @@ pub fn encode(input: &str) -> String {
 ///
 /// # Errors
 ///
-/// This function will return an error if:
 /// - Overflow has occured.
 /// - `input` is not ASCII.
 /// - An invalid Punycode sequence was encountered.
@@ -150,8 +149,10 @@ pub fn decode(input: &str) -> Result<String, PunyDecodeError> {
 ///
 /// # Safety
 ///
-/// `input` must never overflow, that is to say, no code points should exceed
+/// `input` must never overflow. That is to say, no code points should exceed
 /// `(M - INITIAL_N) * (L + 1)`. For more information, see RFC 3492.
+/// - `input` must be valid Punycode (implies ASCII only).
+/// - `input` must not contain an invalid Punycode sequence.
 ///
 /// Failure to uphold these invariants may result in **Undefined Behavior**.
 ///
@@ -213,8 +214,6 @@ pub enum PunyDecodeError {
     InvalidSequence,
     #[error("overflow")]
     Overflow,
-    //#[error("invalid code point")]
-    //InvalidCodePoint,
 }
 
 #[inline]
@@ -329,10 +328,51 @@ mod tests {
     }
 
     #[rstest]
-    //#[case::egyptian("egbpdaj6bu4bxfgehfvwxn", "ليهمابتكلموشعربي؟")]
+    #[case::egyptian("egbpdaj6bu4bxfgehfvwxn", "ليهمابتكلموشعربي؟")]
     #[case::chinese_simplified("ihqwcrb4cv8a8dqg056pqjye", "他们为什么不说中文")]
+    #[case::chinese_traditional("ihqwctvzc91f659drss3x8bo0yb", "他們爲什麽不說中文")]
+    #[case::czech("Proprostnemluvesky-uyb24dma41a", "Pročprostěnemluvíčesky")]
+    #[case::hebrew("4dbcagdahymbxekheh6e0a7fei0b", "למההםפשוטלאמדבריםעברית")]
+    #[case::hindi(
+        "i1baa7eci9glrd9b2ae1bj0hfcgg6iyaf8o0a1dig0cd",
+        "यहलोगहिन्दीक्योंनहींबोलसकतेहैं"
+    )]
+    #[case::japanese(
+        "n8jok5ay5dzabd5bym9f0cm5685rrjetr6pdxa",
+        "なぜみんな日本語を話してくれないのか"
+    )]
+    #[case::korean(
+        "989aomsvi5e83db1d2a355cv1e0vak1dwrv93d5xbh15a0dt30a5jpsd879ccm6fea98c",
+        "세계의모든사람들이한국어를이해한다면얼마나좋을까"
+    )]
+    // NOTE: RFC specifies this D should be uppercase, but both `punycode` and `idna` return
+    // lowercase, so I'll let it be here as well.                       _
+    #[case::russian("b1abfaaepdrnnbgefbadotcwatmq2g4l", "почемужеонинеговорятпорусски")]
+    #[case::spanish(
+        "PorqunopuedensimplementehablarenEspaol-fmd56a",
+        "PorquénopuedensimplementehablarenEspañol"
+    )]
+    #[case::vietnamese(
+        "TisaohkhngthchnitingVit-kjcr8268qyxafd2f1b9g",
+        "TạisaohọkhôngthểchỉnóitiếngViệt"
+    )]
+    #[case::kinpachi("3B-ww4c5e180e575a65lsy2b", "3年B組金八先生")]
+    #[case::super_monkeys(
+        "-with-SUPER-MONKEYS-pc58ag80a8qai00g7n9n",
+        "安室奈美恵-with-SUPER-MONKEYS"
+    )]
+    #[case::hello_another_way(
+        "Hello-Another-Way--fc4qua05auwb3674vfr0b",
+        "Hello-Another-Way-それぞれの場所"
+    )]
+    #[case::under_one_roof("2-u9tlzr9756bt3uc0v", "ひとつ屋根の下2")]
+    #[case::takeuchi("MajiKoi5-783gue6qz075azm5e", "MajiでKoiする5秒前")]
+    #[case::amiyumi("de-jg4avhby1noc0d", "パフィーdeルンバ")]
+    #[case::at_light_speed("d9juau41awczczp", "そのスピードで")]
+    #[case::money("-> $1.00 <--", "-> $1.00 <-")]
     fn test_decode(#[case] input: &str, #[case] expected: &str) -> Result<(), PunyDecodeError> {
         assert_eq!(decode(input)?, expected);
+        unsafe { assert_eq!(decode_unchecked(input), expected) };
 
         Ok(())
     }
