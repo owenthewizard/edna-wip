@@ -1,14 +1,14 @@
-#![cfg_attr(feature = "forbid-unsafe", forbid(unsafe_code))]
-
 use core::cmp::Ordering;
 
 #[cfg(not(feature = "forbid-unsafe"))]
 use core::hint::unreachable_unchecked;
 
 extern crate alloc;
-use alloc::{borrow::Cow, string::String, vec::Vec};
+use alloc::{string::String, vec::Vec};
 
 use thiserror::Error;
+
+use super::Utf32;
 
 const BASE: u32 = 36;
 const T_MIN: u32 = 1;
@@ -18,8 +18,6 @@ const DAMP: u32 = 700;
 const INITIAL_BIAS: u32 = 72;
 const INITIAL_N: u32 = 128;
 const DELIMITER: char = '-';
-
-type Utf32 = Vec<char>;
 
 /// Encodes Unicode as Punycode.
 ///
@@ -33,7 +31,7 @@ type Utf32 = Vec<char>;
 /// assert_eq!(punycode::encode("München"), "Mnchen-3ya");
 /// ```
 #[must_use]
-#[allow(clippy::cast_possible_truncation)]
+#[expect(clippy::cast_possible_truncation, clippy::missing_panics_doc)]
 pub fn encode(input: &str) -> String {
     let input = input.chars().collect::<Utf32>();
 
@@ -99,7 +97,7 @@ pub fn encode(input: &str) -> String {
 /// # use edna::punycode;
 /// assert_eq!(punycode::decode("Mnchen-3ya"), Ok(String::from("München")));
 /// ```
-#[allow(clippy::cast_possible_truncation)]
+#[expect(clippy::cast_possible_truncation, clippy::missing_panics_doc)]
 pub fn decode(input: &str) -> Result<String, PunyDecodeError> {
     let (mut output, mut encoded) = input.rsplit_once('-').map_or_else(
         || (Utf32::new(), input.chars()),
@@ -150,7 +148,10 @@ pub fn decode(input: &str) -> Result<String, PunyDecodeError> {
 /// # Safety
 ///
 /// `input` must never overflow. That is to say, no code points should exceed
-/// `(M - INITIAL_N) * (L + 1)`. For more information, see RFC 3492.
+/// `(M - INITIAL_N) * (L + 1)`. This can never happen with labels <= 63 characters and code points
+/// not not exceeding U+10FFFF. Therefore, any valid IDN label will never overflow. For more
+/// information, see RFC 3492.
+///
 /// - `input` must be valid Punycode (implies ASCII only).
 /// - `input` must not contain an invalid Punycode sequence.
 ///
@@ -208,43 +209,12 @@ pub unsafe fn decode_unchecked(input: &str) -> String {
 
 #[derive(Debug, Error, PartialEq, Eq, Clone)]
 pub enum PunyDecodeError {
-    #[error("input should be ASCII Punycode")]
-    NonAscii,
     #[error("invalid punycode sequence")]
     InvalidSequence,
+    #[error("input should be ASCII Punycode")]
+    NonAscii,
     #[error("overflow")]
     Overflow,
-}
-
-#[inline]
-#[allow(clippy::cast_possible_truncation)]
-const fn encode_digit(d: u32) -> char {
-    debug_assert!(d < 36);
-    //(d + 22 + (if d < 26 { 75 } else { 0 })) as u8 as char
-
-    match d {
-        0..=25 => (d as u8 + b'a') as char,
-        26..=35 => (d as u8 - 26 + b'0') as char,
-        _ => {
-            #[cfg(feature = "forbid-unsafe")]
-            unreachable!();
-            #[cfg(not(feature = "forbid-unsafe"))]
-            unsafe {
-                unreachable_unchecked()
-            };
-        }
-    }
-}
-
-#[inline]
-#[must_use]
-const fn decode_digit(c: char) -> Option<u32> {
-    match c {
-        '0'..='9' => Some((c as u8 - b'0' + 26) as u32),
-        'A'..='Z' => Some((c as u8 - b'A') as u32),
-        'a'..='z' => Some((c as u8 - b'a') as u32),
-        _ => None,
-    }
 }
 
 #[inline]
@@ -269,6 +239,39 @@ const fn clamped_sub(k: u32, bias: u32) -> u32 {
         T_MAX
     } else {
         k - bias
+    }
+}
+
+#[inline]
+#[must_use]
+const fn decode_digit(c: char) -> Option<u32> {
+    match c {
+        '0'..='9' => Some((c as u8 - b'0' + 26) as u32),
+        'A'..='Z' => Some((c as u8 - b'A') as u32),
+        'a'..='z' => Some((c as u8 - b'a') as u32),
+        _ => None,
+    }
+}
+
+#[inline]
+#[allow(clippy::cast_possible_truncation)]
+const fn encode_digit(d: u32) -> char {
+    debug_assert!(d < 36);
+    //(d + 22 + (if d < 26 { 75 } else { 0 })) as u8 as char
+
+    match d {
+        0..=25 => (d as u8 + b'a') as char,
+        26..=35 => (d as u8 - 26 + b'0') as char,
+        // TODO: For some reason the unsafe seems to benchmark worse here, even though it's less
+        // asm?
+        _ => {
+            #[cfg(feature = "forbid-unsafe")]
+            unreachable!();
+            #[cfg(not(feature = "forbid-unsafe"))]
+            unsafe {
+                unreachable_unchecked()
+            };
+        }
     }
 }
 
@@ -372,6 +375,7 @@ mod tests {
     #[case::money("-> $1.00 <--", "-> $1.00 <-")]
     fn test_decode(#[case] input: &str, #[case] expected: &str) -> Result<(), PunyDecodeError> {
         assert_eq!(decode(input)?, expected);
+        #[cfg(not(feature = "forbid-unsafe"))]
         unsafe { assert_eq!(decode_unchecked(input), expected) };
 
         Ok(())
