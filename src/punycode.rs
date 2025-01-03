@@ -1,6 +1,8 @@
 use core::cmp::Ordering;
 
 #[cfg(not(feature = "forbid-unsafe"))]
+use core::hint::assert_unchecked;
+#[cfg(not(feature = "forbid-unsafe"))]
 use core::hint::unreachable_unchecked;
 
 extern crate alloc;
@@ -8,7 +10,7 @@ use alloc::{string::String, vec::Vec};
 
 use thiserror::Error;
 
-use super::Utf32;
+use crate::unwrap;
 
 const BASE: u32 = 36;
 const T_MIN: u32 = 1;
@@ -18,6 +20,8 @@ const DAMP: u32 = 700;
 const INITIAL_BIAS: u32 = 72;
 const INITIAL_N: u32 = 128;
 const DELIMITER: char = '-';
+
+type Utf32 = Vec<char>;
 
 /// Encodes Unicode as Punycode.
 ///
@@ -31,13 +35,11 @@ const DELIMITER: char = '-';
 /// assert_eq!(punycode::encode("München"), "Mnchen-3ya");
 /// ```
 #[must_use]
-#[expect(clippy::cast_possible_truncation, clippy::missing_panics_doc)]
+#[expect(clippy::cast_possible_truncation)]
 pub fn encode(input: &str) -> String {
+    let mut output = input.chars().filter(char::is_ascii).collect::<String>();
     let input = input.chars().collect::<Utf32>();
-
-    let mut output = input.iter().filter(|x| x.is_ascii()).collect::<String>();
     let basic_len = output.len() as u32;
-
     if basic_len > 0 {
         output.push(DELIMITER);
     }
@@ -48,11 +50,12 @@ pub fn encode(input: &str) -> String {
     let mut processed = basic_len;
 
     while processed < input.len() as u32 {
-        let min_cp = *input.iter().filter(|&c| *c as u32 >= cp).min().unwrap() as u32;
+        // SAFETY: input always contains a code point >= cp while processed < input.len()
+        let min_cp = *unwrap!(input.iter().filter(|&c| *c as u32 >= cp).min()) as u32;
         delta += (min_cp - cp) * (processed + 1);
         cp = min_cp;
-        for c in &input {
-            let c = *c as u32;
+        for &c in &input {
+            let c = c as u32;
             match c.cmp(&cp) {
                 Ordering::Less => delta += 1,
                 Ordering::Equal => {
@@ -95,9 +98,9 @@ pub fn encode(input: &str) -> String {
 ///
 /// ```
 /// # use edna::punycode;
-/// assert_eq!(punycode::decode("Mnchen-3ya"), Ok(String::from("München")));
+/// assert_eq!(punycode::decode("Mnchen-3ya"), Ok("München".to_string()));
 /// ```
-#[expect(clippy::cast_possible_truncation, clippy::missing_panics_doc)]
+#[expect(clippy::cast_possible_truncation)]
 pub fn decode(input: &str) -> Result<String, PunyDecodeError> {
     let (mut output, mut encoded) = input.rsplit_once('-').map_or_else(
         || (Utf32::new(), input.chars()),
@@ -134,8 +137,8 @@ pub fn decode(input: &str) -> Result<String, PunyDecodeError> {
             .checked_add(i / (output.len() as u32 + 1))
             .ok_or(PunyDecodeError::Overflow)?;
         i %= output.len() as u32 + 1;
-        let c = char::from_u32(cp).unwrap();
-        //let c = char::from_u32(cp).ok_or(PunyDecodeError::InvalidCodePoint)?;
+        // SAFETY: AFAIK this can never fail, but if that's incorrect please open a bug.
+        let c = unwrap!(char::from_u32(cp));
         output.insert(i as usize, c);
         i += 1;
     }
@@ -217,9 +220,14 @@ pub enum PunyDecodeError {
     Overflow,
 }
 
-#[inline]
 #[must_use]
 const fn adapt(mut delta: u32, num_points: u32, first_time: bool) -> u32 {
+    #[cfg(not(feature = "forbid-unsafe"))]
+    // SAFETY: num_points (processed + 1) is always > 0, even on an empty string.
+    unsafe {
+        assert_unchecked(num_points > 0);
+    }
+
     delta /= if first_time { DAMP } else { 2 };
     delta += delta / num_points;
     let mut k = 0;
@@ -230,7 +238,6 @@ const fn adapt(mut delta: u32, num_points: u32, first_time: bool) -> u32 {
     k + (BASE - T_MIN + 1) * delta / (delta + SKEW)
 }
 
-#[inline]
 #[must_use]
 const fn clamped_sub(k: u32, bias: u32) -> u32 {
     if k <= bias {
@@ -242,7 +249,6 @@ const fn clamped_sub(k: u32, bias: u32) -> u32 {
     }
 }
 
-#[inline]
 #[must_use]
 const fn decode_digit(c: char) -> Option<u32> {
     match c {
@@ -253,21 +259,25 @@ const fn decode_digit(c: char) -> Option<u32> {
     }
 }
 
-#[inline]
-#[allow(clippy::cast_possible_truncation)]
+#[must_use]
+#[expect(clippy::cast_possible_truncation)]
 const fn encode_digit(d: u32) -> char {
-    debug_assert!(d < 36);
-    //(d + 22 + (if d < 26 { 75 } else { 0 })) as u8 as char
+    const _: () = assert!(
+        T_MIN == 1,
+        "encode_digit() should be adjusted when constants are modified"
+    );
+    const MAX: u32 = BASE - T_MIN;
+    debug_assert!(d <= MAX);
 
     match d {
-        0..=25 => (d as u8 + b'a') as char,
-        26..=35 => (d as u8 - 26 + b'0') as char,
-        // TODO: For some reason the unsafe seems to benchmark worse here, even though it's less
-        // asm?
+        0..T_MAX => (d as u8 + b'a') as char,
+        T_MAX..=MAX => (d as u8 - 26 + b'0') as char,
         _ => {
             #[cfg(feature = "forbid-unsafe")]
             unreachable!();
             #[cfg(not(feature = "forbid-unsafe"))]
+            // SAFETY: d is % BASE in encode()
+            // Make sure to adjust this function if you change any of the constants!
             unsafe {
                 unreachable_unchecked()
             };
@@ -277,6 +287,7 @@ const fn encode_digit(d: u32) -> char {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::undocumented_unsafe_blocks)]
     extern crate std;
 
     use rstest::rstest;
@@ -302,7 +313,7 @@ mod tests {
         "989aomsvi5e83db1d2a355cv1e0vak1dwrv93d5xbh15a0dt30a5jpsd879ccm6fea98c"
     )]
     // NOTE: RFC specifies this D should be uppercase, but both `punycode` and `idna` return
-    // lowercase, so I'll let it be here as well.                       _
+    // lowercase, so I'll let it be here as well.
     #[case::russian("почемужеонинеговорятпорусски", "b1abfaaepdrnnbgefbadotcwatmq2g4l")]
     #[case::spanish(
         "PorquénopuedensimplementehablarenEspañol",
@@ -326,6 +337,8 @@ mod tests {
     #[case::amiyumi("パフィーdeルンバ", "de-jg4avhby1noc0d")]
     #[case::at_light_speed("そのスピードで", "d9juau41awczczp")]
     #[case::money("-> $1.00 <-", "-> $1.00 <--")]
+    #[case::empty("", "")]
+    #[case::emoji("🦀", "zs9h")]
     fn test_encode(#[case] input: &str, #[case] expected: &str) {
         assert_eq!(encode(input), expected);
     }
@@ -349,7 +362,7 @@ mod tests {
         "세계의모든사람들이한국어를이해한다면얼마나좋을까"
     )]
     // NOTE: RFC specifies this D should be uppercase, but both `punycode` and `idna` return
-    // lowercase, so I'll let it be here as well.                       _
+    // lowercase, so we'll let it be here as well.                       _
     #[case::russian("b1abfaaepdrnnbgefbadotcwatmq2g4l", "почемужеонинеговорятпорусски")]
     #[case::spanish(
         "PorqunopuedensimplementehablarenEspaol-fmd56a",
@@ -373,10 +386,14 @@ mod tests {
     #[case::amiyumi("de-jg4avhby1noc0d", "パフィーdeルンバ")]
     #[case::at_light_speed("d9juau41awczczp", "そのスピードで")]
     #[case::money("-> $1.00 <--", "-> $1.00 <-")]
+    #[case::empty("", "")]
+    #[case::emoji("zs9h", "🦀")]
     fn test_decode(#[case] input: &str, #[case] expected: &str) -> Result<(), PunyDecodeError> {
         assert_eq!(decode(input)?, expected);
         #[cfg(not(feature = "forbid-unsafe"))]
-        unsafe { assert_eq!(decode_unchecked(input), expected) };
+        unsafe {
+            assert_eq!(decode_unchecked(input), expected);
+        };
 
         Ok(())
     }
