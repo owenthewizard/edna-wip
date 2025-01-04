@@ -58,9 +58,5 @@ harness = false
 name = "main"
 harness = false
 
-[[bench]]
-name = "map"
-harness = false
-
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(ugly_hack)'] }
