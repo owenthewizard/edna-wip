@@ -14,18 +14,11 @@ pub enum Mapping<'a> {
 #[cfg(ugly_hack)]
 impl Mapping<'_> {
     #[must_use]
-    pub fn of(c: char) -> Self {
-        use crate::{data, unwrap};
+    pub fn of(c: char) -> Option<Self> {
+        use crate::data;
         use core::cmp::Ordering;
 
-        // ASCII fast path
-        if c.is_ascii() {
-            return Mapping::Valid;
-        }
-
-        // SAFETY: All non-ASCII char ranges are contained in MAPPING.
-        // Verified by `cargo test --test mapping`.
-        unwrap!(data::MAPPING
+        data::MAPPING
             .binary_search_by(|(range, _)| {
                 if range.contains(&c) {
                     Ordering::Equal
@@ -36,7 +29,28 @@ impl Mapping<'_> {
                 }
             })
             .ok()
-            .and_then(|i| data::MAPPING.get(i)))
-        .1
+            .and_then(|i| data::MAPPING.get(i))
+            .map(|x| x.1)
+    }
+}
+
+#[cfg(all(ugly_hack, test))]
+mod test {
+    use super::*;
+
+    /// Asserts that all ASCII `char`s are excluded from the map.
+    #[test]
+    fn of_ascii() {
+        for c in '\u{0}'..='\u{7f}' {
+            assert!(Mapping::of(c).is_none());
+        }
+    }
+
+    /// Asserts that all non-ASCII `char`s are mapped.
+    #[test]
+    fn of_unicode() {
+        for c in '\u{80}'..'\u{10ffff}' {
+            let _ = Mapping::of(c).unwrap();
+        }
     }
 }

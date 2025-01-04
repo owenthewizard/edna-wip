@@ -1,17 +1,13 @@
 use core::cmp::Ordering;
 
-#[cfg(not(feature = "forbid-unsafe"))]
-use core::hint::assert_unchecked;
-#[cfg(not(feature = "forbid-unsafe"))]
-use core::hint::unreachable_unchecked;
-
 extern crate alloc;
 use alloc::{string::String, vec::Vec};
 
 use thiserror::Error;
 
-use crate::unwrap;
+use crate::{_assert, _unreachable, unwrap};
 
+// You MUST adjust encode_digit() if any of the constants are modified!
 const BASE: u32 = 36;
 const T_MIN: u32 = 1;
 const T_MAX: u32 = 26;
@@ -62,6 +58,9 @@ pub fn encode(input: &str) -> String {
                     let mut q = delta;
                     for k in (BASE..).step_by(BASE as usize) {
                         let t = clamped_sub(k, bias);
+                        // mutants test for clamped_sub
+                        // SAFETY: clamped to T_MIN ..= T_MAX
+                        _assert!((T_MIN..=T_MAX).contains(&t));
 
                         if q < t {
                             break;
@@ -122,6 +121,9 @@ pub fn decode(input: &str) -> Result<String, PunyDecodeError> {
             i = i.checked_add(product).ok_or(PunyDecodeError::Overflow)?;
 
             let t = clamped_sub(k, bias);
+            // mutants test for clamped_sub
+            // SAFETY: clamped to T_MIN ..= T_MAX
+            _assert!((T_MIN..=T_MAX).contains(&t));
 
             if digit < t {
                 break;
@@ -222,11 +224,8 @@ pub enum PunyDecodeError {
 
 #[must_use]
 const fn adapt(mut delta: u32, num_points: u32, first_time: bool) -> u32 {
-    #[cfg(not(feature = "forbid-unsafe"))]
     // SAFETY: num_points (processed + 1) is always > 0, even on an empty string.
-    unsafe {
-        assert_unchecked(num_points > 0);
-    }
+    _assert!(num_points > 0);
 
     delta /= if first_time { DAMP } else { 2 };
     delta += delta / num_points;
@@ -262,25 +261,21 @@ const fn decode_digit(c: char) -> Option<u32> {
 #[must_use]
 #[expect(clippy::cast_possible_truncation)]
 const fn encode_digit(d: u32) -> char {
+    // You MUST adjust this function if any of the constants are modified!
+
     const _: () = assert!(
         T_MIN == 1,
         "encode_digit() should be adjusted when constants are modified"
     );
     const MAX: u32 = BASE - T_MIN;
-    debug_assert!(d <= MAX);
 
     match d {
         0..T_MAX => (d as u8 + b'a') as char,
         T_MAX..=MAX => (d as u8 - 26 + b'0') as char,
         _ => {
-            #[cfg(feature = "forbid-unsafe")]
-            unreachable!();
-            #[cfg(not(feature = "forbid-unsafe"))]
             // SAFETY: d is % BASE in encode()
             // Make sure to adjust this function if you change any of the constants!
-            unsafe {
-                unreachable_unchecked()
-            };
+            _unreachable!()
         }
     }
 }

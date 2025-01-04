@@ -1,14 +1,19 @@
 use rustyline::DefaultEditor;
 
-use edna::punycode::*;
 use edna::*;
 
 fn main() {
     let mut rl = DefaultEditor::new().expect("Failed to init editor");
     while let Ok(ref line) = rl.readline(">> ") {
-        println!("to_ascii: {:?}", to_ascii(line));
-        println!("encode: {:?}", encode(line));
-        println!("decode: {:?}", decode(line));
+        let mut chars = line.chars();
+        if let Some(c) = chars.next() {
+            if chars.next().is_none() {
+                println!("Mapping:of({c}) == {:?}", Mapping::of(c));
+            }
+        }
+        println!("to_ascii({line}) == {:?}", to_ascii(line));
+        println!("punycode::encode({line}) == {:?}", punycode::encode(line));
+        println!("punycode::decode({line}) == {:?}", punycode::decode(line));
         rl.add_history_entry(line).expect("Failed to save history");
     }
 }

@@ -43,6 +43,54 @@ macro_rules! unwrap {
 }
 pub(crate) use unwrap;
 
+macro_rules! _assert {
+    ($e:expr) => {{
+        #[cfg(feature = "forbid-unsafe")]
+        {
+            assert!($e)
+        }
+        #[cfg(not(feature = "forbid-unsafe"))]
+        #[allow(unused_unsafe, reason = "may be encased in an existing unsafe block")]
+        {
+            use core::hint::assert_unchecked;
+            // SAFETY: Caller must verify this is safe.
+            unsafe { assert_unchecked($e) }
+        }
+    }};
+}
+pub(crate) use _assert;
+
+macro_rules! _unreachable {
+    () => {{
+        #[cfg(feature = "forbid-unsafe")]
+        {
+            unreachable!()
+        }
+        #[cfg(not(feature = "forbid-unsafe"))]
+        #[allow(unused_unsafe, reason = "may be encased in an existing unsafe block")]
+        {
+            use core::hint::unreachable_unchecked;
+            // SAFETY: Caller must verify this is safe.
+            unsafe { unreachable_unchecked() }
+        }
+    }};
+
+    ($e:expr) => {{
+        #[cfg(feature = "forbid-unsafe")]
+        {
+            unreachable!($e)
+        }
+        #[cfg(not(feature = "forbid-unsafe"))]
+        #[allow(unused_unsafe, reason = "may be encased in an existing unsafe block")]
+        {
+            use core::hint::unreachable_unchecked;
+            // SAFETY: Caller must verify this is safe.
+            unsafe { unreachable_unchecked() }
+        }
+    }};
+}
+pub(crate) use _unreachable;
+
 #[derive(Debug, Error, PartialEq, Eq, Clone)]
 pub enum ToAsciiError {
     #[error("invalid character")]
@@ -51,18 +99,14 @@ pub enum ToAsciiError {
 
 fn map_internal(mut new: String, old: &str) -> Result<String, ToAsciiError> {
     for c in old.chars() {
-        // ASCII fast paths
-        if c.is_ascii_lowercase() || c.is_ascii_digit() {
-            new.push(c);
-            continue;
-        };
-        if c.is_ascii_uppercase() {
-            // SAFETY: `s` already contains `c` or else we couldn't get here.
+        // ASCII fast path
+        if c.is_ascii() {
             new.push(c.to_ascii_lowercase());
             continue;
-        }
+        };
 
-        match Mapping::of(c) {
+        // SAFETY: All ASCII code points taken care of above.
+        match unwrap!(Mapping::of(c)) {
             Mapping::Valid => new.push(c),
             Mapping::Ignored => continue,
             Mapping::Mapped(s) => new.push_str(s),
@@ -85,27 +129,28 @@ fn map_internal(mut new: String, old: &str) -> Result<String, ToAsciiError> {
 fn map_validate(s: &str) -> Result<Cow<str>, ToAsciiError> {
     // indexing doesn't seem to harm us here - maybe the bounds check gets optimized out
 
-    for c in s.chars() {
+    // ASCII fast path
+    if s.is_ascii() {
+        return Ok(Cow::Owned(s.to_ascii_lowercase()));
+    }
+
+    for (i, c) in s.char_indices() {
         // ASCII fast paths
-        if c.is_ascii_lowercase() || c.is_ascii_digit() {
-            continue;
-        };
         if c.is_ascii_uppercase() {
-            // SAFETY: `s` already contains `c` or else we couldn't get here.
-            let i = unwrap!(s.find(c));
-            let n = c.len_utf8();
             let mut new = String::new();
             new.push_str(&s[..i]);
             new.push(c.to_ascii_lowercase());
-            return map_internal(new, &s[i + n..]).map(Cow::Owned);
+            return map_internal(new, &s[i + 1..]).map(Cow::Owned);
+        }
+        if c.is_ascii() {
+            continue;
         }
 
-        match Mapping::of(c) {
+        // SAFETY: All ASCII code points taken care of above.
+        match unwrap!(Mapping::of(c)) {
             Mapping::Valid => continue,
 
             Mapping::Ignored => {
-                // SAFETY: `s` already contains `c` or else we couldn't get here.
-                let i = unwrap!(s.find(c));
                 let n = c.len_utf8();
                 let mut new = String::new();
                 new.push_str(&s[..i]);
@@ -113,8 +158,6 @@ fn map_validate(s: &str) -> Result<Cow<str>, ToAsciiError> {
             }
 
             Mapping::Mapped(r) => {
-                // SAFETY: `s` already contains `c` or else we couldn't get here.
-                let i = unwrap!(s.find(c));
                 let n = c.len_utf8();
                 let mut new = String::new();
                 new.push_str(&s[..i]);
@@ -140,16 +183,20 @@ fn map_validate(s: &str) -> Result<Cow<str>, ToAsciiError> {
 }
 
 pub fn validate(s: &str) -> Result<(), ToAsciiError> {
-    for c in s.chars() {
-        // All ASCII code points are Valid.
-        if c.is_ascii() {
+    // ASCII fast_paths
+    if s.chars().any(|x| x.is_ascii_uppercase()) {
+        return Err(ToAsciiError::InvalidCharacter);
+    }
+    if s.is_ascii() {
+        return Ok(());
+    }
+
+    // All ASCII is valid except uppercase, which fails above.
+    for c in s.chars().filter(|x| !x.is_ascii()) {
+        if Mapping::of(c) == Some(Mapping::Valid) {
             continue;
         }
-
-        match Mapping::of(c) {
-            Mapping::Valid => continue,
-            _ => return Err(ToAsciiError::InvalidCharacter),
-        }
+        return Err(ToAsciiError::InvalidCharacter);
     }
 
     Ok(())
@@ -195,16 +242,41 @@ mod tests {
     use super::*;
 
     #[rstest]
-    #[case::munchen("münchen.de", Ok("xn--mnchen-3ya.de"))]
-    #[case::uber("www.über.com", Ok("www.xn--ber-goa.com"))]
-    #[case::chinese_simplified("例子.测试", Ok("xn--fsqu00a.xn--0zwm56d"))]
-    #[case::greek("παράδειγμα.δοκιμή", Ok("xn--hxajbheg2az3al.xn--jxalpdlp"))]
-    #[case::zwj("🧑‍💻.com", Ok("xn--1ugx175ptgd.com"))]
-    #[case::emoji_middle("exam💩ple.com", Ok("xn--example-wg05f.com"))]
-    #[case::empty("", Ok(""))]
-    #[case::emoji("🦀.☕", Ok("xn--zs9h.xn--53h"))]
+    #[case::ascii("www.example.com", Ok(Cow::Borrowed("www.example.com")))]
+    #[case::digits("123.test", Ok(Cow::Borrowed("123.test")))]
+    #[case::munchen("münchen.de", Ok(Cow::Owned("xn--mnchen-3ya.de".into())))]
+    #[case::uber("www.über.com", Ok(Cow::Owned("www.xn--ber-goa.com".into())))]
+    #[case::chinese_simplified("例子.测试", Ok(Cow::Owned("xn--fsqu00a.xn--0zwm56d".into())))]
+    #[case::greek("παράδειγμα.δοκιμή", Ok(Cow::Owned("xn--hxajbheg2az3al.xn--jxalpdlp".into())))]
+    #[case::emoji_middle("exam💩ple.com", Ok(Cow::Owned("xn--example-wg05f.com".into())))]
+    #[case::emoji("🦀.☕", Ok(Cow::Owned("xn--zs9h.xn--53h".into())))]
+    #[case::empty("", Ok(Cow::Borrowed("")))]
+    #[case::valid("www.¡Hola!.com.mx", Ok(Cow::Owned("www.xn--hola!-xfa.com.mx".into())))]
+    #[case::mapped("www.Ç.com", Ok(Cow::Owned("www.xn--7ca.com".into())))]
     #[case::invalid("\u{10FFF}", Err(ToAsciiError::InvalidCharacter))]
-    fn test_to_ascii(#[case] input: &str, #[case] expected: Result<&str, ToAsciiError>) {
-        assert_eq!(to_ascii(input).as_deref(), expected.as_deref());
+    #[case::ignored("www.exam\u{00ad}ple.com", Ok(Cow::Owned("www.example.com".into())))]
+    #[case::deviation_eszett("faß.de", Ok(Cow::Owned("xn--fa-hia.de".into())))]
+    #[case::deviation_sigma("βόλος.com", Ok(Cow::Owned("xn--nxasmm1c.com".into())))]
+    #[case::deviation_zwj("ශ්‍රී.com", Ok(Cow::Owned("xn--10cl1a0b660p.com".into())))]
+    #[case::deviation_zwnj("نامه‌ای.com", Ok(Cow::Owned("xn--mgba3gch31f060k.com".into())))]
+    fn test_to_ascii(#[case] input: &str, #[case] expected: Result<Cow<str>, ToAsciiError>) {
+        assert_eq!(to_ascii(input), expected);
+    }
+
+    #[rstest]
+    #[case::munchen("münchen.de", Ok(()))]
+    #[case::uber("www.über.com", Ok(()))]
+    #[case::chinese_simplified("例子.测试", Ok(()))]
+    #[case::greek("παράδειγμα.δοκιμή", Ok(()))]
+    #[case::emoji_middle("exam💩ple.com", Ok(()))]
+    #[case::emoji("🦀.☕", Ok(()))]
+    #[case::empty("", Ok(()))]
+    #[case::valid("www.¡hola!.com.mx", Ok(()))]
+    #[case::mapped("www.Ç.com", Err(ToAsciiError::InvalidCharacter))]
+    #[case::invalid("\u{10FFF}", Err(ToAsciiError::InvalidCharacter))]
+    #[case::ignored("www.exam\u{00ad}ple.com", Err(ToAsciiError::InvalidCharacter))]
+    #[case::deviation("faß.de", Ok(()))]
+    fn test_validate(#[case] input: &str, #[case] expected: Result<(), ToAsciiError>) {
+        assert_eq!(validate(input), expected);
     }
 }

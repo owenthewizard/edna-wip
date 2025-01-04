@@ -1,0 +1,131 @@
+#![no_std]
+#![cfg_attr(feature = "forbid-unsafe", forbid(unsafe_code))]
+#![warn(
+    clippy::undocumented_unsafe_blocks,
+    clippy::pedantic,
+    clippy::nursery,
+    clippy::std_instead_of_core
+)]
+
+extern crate alloc;
+use alloc::{borrow::Cow, string::String, vec::Vec};
+
+use thiserror::Error;
+use unicode_normalization::{is_nfc_quick, IsNormalized, UnicodeNormalization};
+
+#[global_allocator]
+static ALLOC: rpmalloc::RpMalloc = rpmalloc::RpMalloc;
+
+pub(crate) mod data {
+    include!(concat!(env!("OUT_DIR"), "/data.rs"));
+}
+
+mod mapping;
+pub(crate) use mapping::Mapping;
+
+pub mod punycode;
+
+pub(crate) type Utf32 = Vec<char>;
+
+/// The prefix used before a punycode label.
+const PREFIX: &str = "xn--";
+
+macro_rules! unwrap {
+    ($opt:expr) => {{
+        #[cfg(feature = "forbid-unsafe")]
+        {
+            $opt.unwrap()
+        }
+        #[cfg(not(feature = "forbid-unsafe"))]
+        {
+            // SAFETY: Caller must verify this is safe.
+            unsafe { $opt.unwrap_unchecked() }
+        }
+    }};
+}
+pub(crate) use unwrap;
+
+#[derive(Debug, Error, PartialEq, Eq, Clone)]
+pub enum ToAsciiError {
+    #[error("invalid character")]
+    InvalidCharacter,
+}
+
+#[must_use]
+fn map_internal(mut new: String, old: &str) -> String {
+    for c in old.chars() {
+        match Mapping::of(c) {
+            Mapping::Ignored => continue,
+            Mapping::Mapped(s) => new.push_str(s),
+            _ => new.push(c),
+        }
+    }
+    new
+}
+
+#[must_use]
+pub fn map(s: &str) -> String {
+    let mut out = String::new();
+    let s = s.to_ascii_lowercase().chars().collect::<Utf32>();
+
+    for &c in s.iter() {
+        if c.is_ascii() {
+            out.push(c);
+            continue;
+        }
+
+        match Mapping::of(c) {
+            Mapping::Mapped(r) => out.push_str(r),
+            Mapping::Ignored => continue,
+            _ => out.push(c),
+        }
+    }
+
+    s.into_iter().collect()
+}
+
+fn validate(s: &str) -> Result<(), ToAsciiError> {
+    for c in s.chars() {
+        match Mapping::of(c) {
+            Mapping::Valid => continue,
+            _ => return Err(ToAsciiError::InvalidCharacter),
+        }
+    }
+
+    Ok(())
+}
+
+pub fn to_ascii(s: &str) -> Result<String, ToAsciiError> {
+    let mut s = map(s);
+
+    if is_nfc_quick(s.chars()) != IsNormalized::Yes {
+        s = s.nfc().collect();
+    }
+
+    validate(s.as_ref())?;
+
+    let mut ret = String::new();
+    for label in s.split_inclusive('.') {
+        if label.is_ascii() {
+            ret.push_str(label);
+        } else {
+            ret.push_str(PREFIX);
+            ret.push_str(punycode::encode(label).as_str());
+        }
+    }
+    Ok(ret)
+}
+
+/*
+#[cfg(test)]
+mod tests {
+    extern crate std;
+
+    use rstest::rstest;
+
+    #[test]
+    fn foo() {
+        std::println!("{}", super::to_ascii("\u{c07d2}\u{e75a5}\u{8659b}\u{849dd}\u{5b6b0}\u{88288}\u{4595e}\u{dcf05}\u{6336e}\u{9e112}ꬽ\u{a9cf4}\u{fe84f}\u{1e085}\u{c845d}\u{e4401}").unwrap());
+    }
+}
+*/

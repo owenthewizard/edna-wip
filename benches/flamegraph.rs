@@ -1,6 +1,7 @@
 #![no_std]
 #![no_main]
 #![allow(clippy::missing_panics_doc)]
+#![allow(unused_imports, reason = "comments")]
 
 use core::{hint::black_box, iter};
 

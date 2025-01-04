@@ -1,0 +1,66 @@
+[package]
+name = "edna"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+rpmalloc = { version = "0.2", optional = true }
+thiserror = { version = "2", default-features = false }
+unicode-normalization = "0.1"
+
+[build-dependencies]
+anyhow = "1"
+proc-macro2 = "1"
+prettyplease = "0.2"
+quote = "1"
+syn = "2"
+cc = "1.2.6"
+
+[profile.release]
+opt-level = 3
+codegen-units = 1
+lto = "fat"
+strip = "symbols"
+
+[profile.profiling]
+inherits = "release"
+debug = "full"
+strip = "none"
+panic = "abort"
+
+[dev-dependencies]
+idna = "1"
+punycode = "0.4"
+rstest = { version = "0.23", default-features = false }
+rand = { version = "0.8", default-features = false, features = ["alloc", "small_rng"] }
+criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support", "rayon"] }
+rustyline = "15"
+
+[features]
+forbid-unsafe = []
+benchmark-encode = []
+benchmark-decode = []
+benchmark-idna = []
+benchmark-punycode = []
+rpmalloc = ["dep:rpmalloc"]
+default = ["rpmalloc"]
+
+[[bench]]
+name = "punycode"
+harness = false
+
+[[bench]]
+name = "flamegraph"
+harness = false
+
+[[bench]]
+name = "main"
+harness = false
+
+[[bench]]
+name = "map"
+harness = false
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(ugly_hack)'] }
