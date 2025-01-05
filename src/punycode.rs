@@ -33,8 +33,26 @@ type Utf32 = Vec<char>;
 #[must_use]
 #[expect(clippy::cast_possible_truncation)]
 pub fn encode(input: &str) -> String {
-    let mut output = input.chars().filter(char::is_ascii).collect::<String>();
-    let input = input.chars().collect::<Utf32>();
+    // UTF-32 is 4x as many bytes as UTF-8 in the worst case, but may be less
+    let mut new_input = Utf32::with_capacity(input.len() * 4);
+    let mut output = String::with_capacity(input.len() * 4);
+    // number of non-ASCII code points is unknown
+    let mut non_ascii = Utf32::new();
+
+    for c in input.chars() {
+        new_input.push(c);
+        if c.is_ascii() {
+            output.push(c);
+        } else {
+            non_ascii.push(c);
+        }
+    }
+    let input = new_input;
+
+    non_ascii.sort_unstable();
+    non_ascii.dedup();
+    let mut non_ascii = non_ascii.into_iter();
+
     let basic_len = output.len() as u32;
     if basic_len > 0 {
         output.push(DELIMITER);
@@ -47,7 +65,7 @@ pub fn encode(input: &str) -> String {
 
     while processed < input.len() as u32 {
         // SAFETY: input always contains a code point >= cp while processed < input.len()
-        let min_cp = *unwrap!(input.iter().filter(|&c| *c as u32 >= cp).min()) as u32;
+        let min_cp = unwrap!(non_ascii.next()) as u32;
         delta += (min_cp - cp) * (processed + 1);
         cp = min_cp;
         for &c in &input {
