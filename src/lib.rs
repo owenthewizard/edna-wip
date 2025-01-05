@@ -11,10 +11,6 @@ use alloc::{borrow::Cow, string::String};
 use thiserror::Error;
 use unicode_normalization::{is_nfc_quick, IsNormalized, UnicodeNormalization};
 
-#[cfg(feature = "rpmalloc")]
-#[global_allocator]
-static ALLOC: rpmalloc::RpMalloc = rpmalloc::RpMalloc;
-
 pub(crate) mod data {
     include!(concat!(env!("OUT_DIR"), "/data.rs"));
 }
@@ -137,7 +133,7 @@ fn map_validate(s: &str) -> Result<Cow<str>, ToAsciiError> {
     for (i, c) in s.char_indices() {
         // ASCII fast paths
         if c.is_ascii_uppercase() {
-            let mut new = String::new();
+            let mut new = String::with_capacity(s.len() * 4);
             new.push_str(&s[..i]);
             new.push(c.to_ascii_lowercase());
             return map_internal(new, &s[i + 1..]).map(Cow::Owned);
@@ -152,14 +148,14 @@ fn map_validate(s: &str) -> Result<Cow<str>, ToAsciiError> {
 
             Mapping::Ignored => {
                 let n = c.len_utf8();
-                let mut new = String::new();
+                let mut new = String::with_capacity(s.len() * 4);
                 new.push_str(&s[..i]);
                 return map_internal(new, &s[i + n..]).map(Cow::Owned);
             }
 
             Mapping::Mapped(r) => {
                 let n = c.len_utf8();
-                let mut new = String::new();
+                let mut new = String::with_capacity(s.len() * 4);
                 new.push_str(&s[..i]);
                 new.push_str(r);
                 return map_internal(new, &s[i + n..]).map(Cow::Owned);
@@ -213,7 +209,7 @@ pub fn to_ascii(s: &str) -> Result<Cow<str>, ToAsciiError> {
         return Ok(s);
     }
 
-    let mut ret = String::new();
+    let mut ret = String::with_capacity(s.len() * 4);
     for (label, dot) in s
         .split_inclusive('.')
         .map(|x| x.split_once('.').map_or((x, None), |(a, b)| (a, Some(b))))
