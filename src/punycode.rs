@@ -33,9 +33,7 @@ type Utf32 = Vec<char>;
 #[must_use]
 #[expect(clippy::cast_possible_truncation)]
 pub fn encode(input: &str) -> String {
-    // UTF-32 is 4x as many bytes as UTF-8 in the worst case, but may be less
     let mut new_input = Utf32::with_capacity(input.len() * 4);
-    // ASCII-Unicode split is unknown, same worst case as above
     let mut output = String::with_capacity(input.len() * 4);
     let mut non_ascii = Utf32::with_capacity(input.len() * 4);
 
