@@ -23,6 +23,26 @@ pub mod punycode;
 /// The prefix used before a punycode label.
 pub const PREFIX: &str = "xn--";
 
+const PUNYCODE_PREFIX: u32 =
+    ((b'-' as u32) << 24) | ((b'-' as u32) << 16) | ((b'N' as u32) << 8) | b'X' as u32;
+const PUNYCODE_PREFIX_MASK: u32 = (0xFF << 24) | (0xFF << 16) | (0xDF << 8) | 0xDF;
+
+/// `has_punycode_prefix` from idna
+/// Copyright (c) 2013-2022 The rust-url developers
+const fn has_punycode_prefix(slice: &[u8]) -> bool {
+    if slice.len() < 4 {
+        return false;
+    }
+    // Sadly, the optimizer doesn't figure out that more idiomatic code
+    // should compile to masking on 32-bit value.
+    let a = slice[0] as u32;
+    let b = slice[1] as u32;
+    let c = slice[2] as u32;
+    let d = slice[3] as u32;
+    let u = d << 24 | c << 16 | b << 8 | a;
+    (u & PUNYCODE_PREFIX_MASK) == PUNYCODE_PREFIX
+}
+
 macro_rules! unwrap {
     ($opt:expr) => {{
         #[cfg(feature = "forbid-unsafe")]
@@ -91,6 +111,14 @@ pub(crate) use _unreachable;
 pub enum ToAsciiError {
     #[error("invalid character")]
     InvalidCharacter,
+    #[error("punycode encoding error: {0}")]
+    Encode(punycode::PunyEncodeError),
+}
+
+impl From<punycode::PunyEncodeError> for ToAsciiError {
+    fn from(e: punycode::PunyEncodeError) -> Self {
+        Self::Encode(e)
+    }
 }
 
 fn map_internal(mut new: String, old: &str) -> Result<String, ToAsciiError> {
@@ -198,15 +226,11 @@ pub fn validate(s: &str) -> Result<(), ToAsciiError> {
     Ok(())
 }
 
-pub fn to_ascii(s: &str) -> Result<Cow<str>, ToAsciiError> {
+pub fn to_ascii(s: &str) -> Result<String, ToAsciiError> {
     let mut s = map_validate(s)?;
 
     if is_nfc_quick(s.chars()) != IsNormalized::Yes {
         s = Cow::Owned(s.nfc().collect());
-    }
-
-    if s.is_ascii() {
-        return Ok(s);
     }
 
     let mut ret = String::with_capacity(s.len() * 4);
@@ -215,10 +239,14 @@ pub fn to_ascii(s: &str) -> Result<Cow<str>, ToAsciiError> {
         .map(|x| x.split_once('.').map_or((x, None), |(a, b)| (a, Some(b))))
     {
         if label.is_ascii() {
+            // TODO maybe check punycode
             ret.push_str(label);
         } else {
+            if has_punycode_prefix(label.as_bytes()) {
+                return Err(ToAsciiError::InvalidCharacter);
+            }
             ret.push_str(PREFIX);
-            ret.push_str(&punycode::encode(label));
+            ret.push_str(&punycode::encode(label)?);
         }
 
         if dot.is_some() {
@@ -226,7 +254,7 @@ pub fn to_ascii(s: &str) -> Result<Cow<str>, ToAsciiError> {
         }
     }
 
-    Ok(Cow::Owned(ret))
+    Ok(ret)
 }
 
 #[cfg(test)]
@@ -238,25 +266,25 @@ mod tests {
     use super::*;
 
     #[rstest]
-    #[case::ascii("www.example.com", Ok(Cow::Borrowed("www.example.com")))]
-    #[case::digits("123.test", Ok(Cow::Borrowed("123.test")))]
-    #[case::munchen("münchen.de", Ok(Cow::Owned("xn--mnchen-3ya.de".into())))]
-    #[case::uber("www.über.com", Ok(Cow::Owned("www.xn--ber-goa.com".into())))]
-    #[case::chinese_simplified("例子.测试", Ok(Cow::Owned("xn--fsqu00a.xn--0zwm56d".into())))]
-    #[case::greek("παράδειγμα.δοκιμή", Ok(Cow::Owned("xn--hxajbheg2az3al.xn--jxalpdlp".into())))]
-    #[case::emoji_middle("exam💩ple.com", Ok(Cow::Owned("xn--example-wg05f.com".into())))]
-    #[case::emoji("🦀.☕", Ok(Cow::Owned("xn--zs9h.xn--53h".into())))]
-    #[case::empty("", Ok(Cow::Borrowed("")))]
-    #[case::valid("www.¡Hola!.com.mx", Ok(Cow::Owned("www.xn--hola!-xfa.com.mx".into())))]
-    #[case::mapped("www.Ç.com", Ok(Cow::Owned("www.xn--7ca.com".into())))]
+    #[case::ascii("www.example.com", Ok("www.example.com"))]
+    #[case::digits("123.test", Ok("123.test"))]
+    #[case::munchen("münchen.de", Ok("xn--mnchen-3ya.de"))]
+    #[case::uber("www.über.com", Ok("www.xn--ber-goa.com"))]
+    #[case::chinese_simplified("例子.测试", Ok("xn--fsqu00a.xn--0zwm56d"))]
+    #[case::greek("παράδειγμα.δοκιμή", Ok("xn--hxajbheg2az3al.xn--jxalpdlp"))]
+    #[case::emoji_middle("exam💩ple.com", Ok("xn--example-wg05f.com"))]
+    #[case::emoji("🦀.☕", Ok("xn--zs9h.xn--53h"))]
+    #[case::empty("", Ok(""))]
+    #[case::valid("www.¡Hola!.com.mx", Ok("www.xn--hola!-xfa.com.mx"))]
+    #[case::mapped("www.Ç.com", Ok("www.xn--7ca.com"))]
     #[case::invalid("\u{10FFF}", Err(ToAsciiError::InvalidCharacter))]
-    #[case::ignored("www.exam\u{00ad}ple.com", Ok(Cow::Owned("www.example.com".into())))]
-    #[case::deviation_eszett("faß.de", Ok(Cow::Owned("xn--fa-hia.de".into())))]
-    #[case::deviation_sigma("βόλος.com", Ok(Cow::Owned("xn--nxasmm1c.com".into())))]
-    #[case::deviation_zwj("ශ්‍රී.com", Ok(Cow::Owned("xn--10cl1a0b660p.com".into())))]
-    #[case::deviation_zwnj("نامه‌ای.com", Ok(Cow::Owned("xn--mgba3gch31f060k.com".into())))]
-    fn test_to_ascii(#[case] input: &str, #[case] expected: Result<Cow<str>, ToAsciiError>) {
-        assert_eq!(to_ascii(input), expected);
+    #[case::ignored("www.exam\u{00ad}ple.com", Ok("www.example.com"))]
+    #[case::deviation_eszett("faß.de", Ok("xn--fa-hia.de"))]
+    #[case::deviation_sigma("βόλος.com", Ok("xn--nxasmm1c.com"))]
+    #[case::deviation_zwj("ශ්‍රී.com", Ok("xn--10cl1a0b660p.com"))]
+    #[case::deviation_zwnj("نامه‌ای.com", Ok("xn--mgba3gch31f060k.com"))]
+    fn test_to_ascii(#[case] input: &str, #[case] expected: Result<&str, ToAsciiError>) {
+        assert_eq!(to_ascii(input).as_deref(), expected.as_deref());
     }
 
     #[rstest]

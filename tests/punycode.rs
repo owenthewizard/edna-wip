@@ -23,7 +23,7 @@ use rstest::rstest;
 fn encode_compare_to_punycode(#[case] input: &str) {
     let got = edna::punycode::encode(input);
     let expected = punycode::encode(input);
-    assert_eq!(Ok(got), expected);
+    assert_eq!(got.unwrap(), expected.unwrap());
 }
 
 #[rstest]
@@ -78,7 +78,7 @@ fn decode_compare_to_punycode(#[case] input: &str) {
 fn encode_compare_to_idna(#[case] input: &str) {
     let got = edna::punycode::encode(input);
     let expected = idna::punycode::encode_str(input);
-    assert_eq!(Some(got), expected);
+    assert_eq!(got.unwrap(), expected.unwrap());
 }
 
 #[rstest]

@@ -5,7 +5,6 @@ use std::{
     str::FromStr,
 };
 
-use anyhow::{Context, Result};
 use prettyplease::unparse;
 use proc_macro2::TokenStream;
 use quote::{quote, ToTokens};
@@ -16,7 +15,7 @@ mod mapping;
 use mapping::Mapping;
 
 impl FromStr for Mapping<'_> {
-    type Err = anyhow::Error;
+    type Err = String;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         #[expect(clippy::match_same_arms)]
@@ -26,9 +25,9 @@ impl FromStr for Mapping<'_> {
             "disallowed" => Ok(Self::Disallowed),
             // we don't support transitional processing
             "deviation" => Ok(Self::Valid),
-            e => Err(anyhow::Error::msg(format!(
+            e => Err(format!(
                 "no FromStr implementation for Mapping from input \'{e}\'"
-            ))),
+            )),
         }
     }
 }
@@ -121,8 +120,8 @@ fn overlaps(a: &IdnaMap, b: &IdnaMap) -> bool {
     })
 }
 
-fn generate_data() -> Result<impl Iterator<Item = IdnaMap>> {
-    let file = File::open("IdnaMappingTable.txt").context("failed to open IdnaMappingTable.txt")?;
+fn generate_data() -> impl Iterator<Item = IdnaMap> {
+    let file = File::open("IdnaMappingTable.txt").expect("failed to open IdnaMappingTable.txt");
     let reader = io::BufReader::new(file);
 
     let idna_maps = reader
@@ -141,12 +140,12 @@ fn generate_data() -> Result<impl Iterator<Item = IdnaMap>> {
 
     let merged = merge_ranges(idna_maps);
 
-    Ok(merged.into_iter())
+    merged.into_iter()
 }
 
-fn main() -> Result<()> {
+fn main() {
     println!("cargo:rustc-cfg=ugly_hack");
-    let data = generate_data().context("failed to generate IdnaMappingTable data")?;
+    let data = generate_data();
     let pairs = data.map(|x| {
         let status = match x.status.as_str() {
             "mapped" => Mapping::Mapped(x.map.as_str()),
@@ -168,12 +167,10 @@ fn main() -> Result<()> {
 
     let pretty = unparse(&tokens);
 
-    let out_dir = env::var("OUT_DIR").context("failed to get target directory")?;
+    let out_dir = env::var("OUT_DIR").expect("failed to get target directory");
     let out_file = out_dir + "/data.rs";
-    let mut out = File::create(out_file).context("failed to create src/idna_map.rs")?;
+    let mut out = File::create(out_file).expect("failed to create src/idna_map.rs");
 
     out.write_all(pretty.as_bytes())
-        .context("failed to write pretty source")?;
-
-    Ok(())
+        .expect("failed to write pretty source");
 }

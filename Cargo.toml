@@ -9,7 +9,6 @@ thiserror = { version = "2", default-features = false }
 unicode-normalization = "0.1"
 
 [build-dependencies]
-anyhow = "1"
 proc-macro2 = "1"
 prettyplease = "0.2"
 quote = "1"

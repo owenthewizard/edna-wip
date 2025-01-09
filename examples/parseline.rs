@@ -14,6 +14,7 @@ fn main() {
         println!("to_ascii({line}) == {:?}", to_ascii(line));
         println!("punycode::encode({line}) == {:?}", punycode::encode(line));
         println!("punycode::decode({line}) == {:?}", punycode::decode(line));
+        println!("idna::punycode::encode({line}) == {:?}", idna::punycode::encode_str(line));
         rl.add_history_entry(line).expect("Failed to save history");
     }
 }

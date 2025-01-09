@@ -32,7 +32,7 @@ type Utf32 = Vec<char>;
 /// ```
 #[must_use]
 #[expect(clippy::cast_possible_truncation)]
-pub fn encode(input: &str) -> String {
+pub fn encode(input: &str) -> Result<String, PunyEncodeError> {
     let mut new_input = Utf32::with_capacity(input.len() * 4);
     let mut output = String::with_capacity(input.len() * 4);
     let mut non_ascii = Utf32::with_capacity(input.len() * 4);
@@ -61,10 +61,12 @@ pub fn encode(input: &str) -> String {
     let mut bias = INITIAL_BIAS;
     let mut processed = basic_len;
 
-    while processed < input.len() as u32 {
+    while processed < u32::try_from(input.len()).map_err(|_| PunyEncodeError::Overflow)? {
         // SAFETY: input always contains a code point >= cp while processed < input.len()
         let min_cp = unwrap!(non_ascii.next()) as u32;
-        delta += (min_cp - cp) * (processed + 1);
+        delta += (min_cp - cp)
+            .checked_mul(processed + 1)
+            .ok_or(PunyEncodeError::Overflow)?;
         cp = min_cp;
         for &c in &input {
             let c = c as u32;
@@ -98,7 +100,7 @@ pub fn encode(input: &str) -> String {
         cp += 1;
     }
 
-    output
+    Ok(output)
 }
 
 /// Decodes Punycode to Unicode.
@@ -229,6 +231,12 @@ pub unsafe fn decode_unchecked(input: &str) -> String {
 }
 
 #[derive(Debug, Error, PartialEq, Eq, Clone)]
+pub enum PunyEncodeError {
+    #[error("overflow")]
+    Overflow,
+}
+
+#[derive(Debug, Error, PartialEq, Eq, Clone)]
 pub enum PunyDecodeError {
     #[error("invalid punycode sequence")]
     InvalidSequence,
@@ -351,7 +359,7 @@ mod tests {
     #[case::empty("", "")]
     #[case::emoji("🦀", "zs9h")]
     fn test_encode(#[case] input: &str, #[case] expected: &str) {
-        assert_eq!(encode(input), expected);
+        assert_eq!(encode(input).as_deref(), Ok(expected));
     }
 
     #[rstest]
