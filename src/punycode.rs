@@ -28,7 +28,7 @@ type Utf32 = Vec<char>;
 ///
 /// ```
 /// # use edna::punycode;
-/// assert_eq!(punycode::encode("München"), "Mnchen-3ya");
+/// assert_eq!(punycode::encode("München").as_deref(), Ok("Mnchen-3ya"));
 /// ```
 #[must_use]
 #[expect(clippy::cast_possible_truncation)]

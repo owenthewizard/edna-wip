@@ -109,15 +109,21 @@ pub(crate) use _unreachable;
 
 #[derive(Debug, Error, PartialEq, Eq, Clone)]
 pub enum ToAsciiError {
-    #[error("invalid character")]
-    InvalidCharacter,
+    #[error("invalid character: {}", Self::format_option(.0))]
+    InvalidCharacter(Option<char>),
     #[error("punycode encoding error: {0}")]
-    Encode(punycode::PunyEncodeError),
+    Encode(#[from] punycode::PunyEncodeError),
+    #[error("invalid punycode label: {0}")]
+    InvalidPunycode(String),
 }
 
-impl From<punycode::PunyEncodeError> for ToAsciiError {
-    fn from(e: punycode::PunyEncodeError) -> Self {
-        Self::Encode(e)
+impl ToAsciiError {
+    fn format_option(o: &Option<char>) -> String {
+        if let Some(c) = o {
+            String::from(*c)
+        } else {
+            String::new()
+        }
     }
 }
 
@@ -134,7 +140,7 @@ fn map_internal(mut new: String, old: &str) -> Result<String, ToAsciiError> {
             Mapping::Valid => new.push(c),
             Mapping::Ignored => continue,
             Mapping::Mapped(s) => new.push_str(s),
-            Mapping::Disallowed => return Err(ToAsciiError::InvalidCharacter),
+            Mapping::Disallowed => return Err(ToAsciiError::InvalidCharacter(Some(c))),
             Mapping::Deviation => {
                 #[cfg(not(feature = "forbid-unsafe"))]
                 // SAFETY: Deviations are filtered out in build.rs
@@ -150,7 +156,7 @@ fn map_internal(mut new: String, old: &str) -> Result<String, ToAsciiError> {
     Ok(new)
 }
 
-fn map_validate(s: &str) -> Result<Cow<str>, ToAsciiError> {
+pub fn map_validate(s: &str) -> Result<Cow<str>, ToAsciiError> {
     // indexing doesn't seem to harm us here - maybe the bounds check gets optimized out
 
     // ASCII fast path
@@ -189,7 +195,7 @@ fn map_validate(s: &str) -> Result<Cow<str>, ToAsciiError> {
                 return map_internal(new, &s[i + n..]).map(Cow::Owned);
             }
 
-            Mapping::Disallowed => return Err(ToAsciiError::InvalidCharacter),
+            Mapping::Disallowed => return Err(ToAsciiError::InvalidCharacter(Some(c))),
 
             Mapping::Deviation => {
                 #[cfg(not(feature = "forbid-unsafe"))]
@@ -209,7 +215,7 @@ fn map_validate(s: &str) -> Result<Cow<str>, ToAsciiError> {
 pub fn validate(s: &str) -> Result<(), ToAsciiError> {
     // ASCII fast_paths
     if s.chars().any(|x| x.is_ascii_uppercase()) {
-        return Err(ToAsciiError::InvalidCharacter);
+        return Err(ToAsciiError::InvalidCharacter(None));
     }
     if s.is_ascii() {
         return Ok(());
@@ -220,7 +226,7 @@ pub fn validate(s: &str) -> Result<(), ToAsciiError> {
         if Mapping::of(c) == Some(Mapping::Valid) {
             continue;
         }
-        return Err(ToAsciiError::InvalidCharacter);
+        return Err(ToAsciiError::InvalidCharacter(Some(c)));
     }
 
     Ok(())
@@ -243,7 +249,7 @@ pub fn to_ascii(s: &str) -> Result<String, ToAsciiError> {
             ret.push_str(label);
         } else {
             if has_punycode_prefix(label.as_bytes()) {
-                return Err(ToAsciiError::InvalidCharacter);
+                return Err(ToAsciiError::InvalidPunycode(label.into()));
             }
             ret.push_str(PREFIX);
             ret.push_str(&punycode::encode(label)?);
@@ -277,7 +283,7 @@ mod tests {
     #[case::empty("", Ok(""))]
     #[case::valid("www.¡Hola!.com.mx", Ok("www.xn--hola!-xfa.com.mx"))]
     #[case::mapped("www.Ç.com", Ok("www.xn--7ca.com"))]
-    #[case::invalid("\u{10FFF}", Err(ToAsciiError::InvalidCharacter))]
+    #[case::invalid("\u{10fff}", Err(ToAsciiError::InvalidCharacter(Some('\u{10fff}'))))]
     #[case::ignored("www.exam\u{00ad}ple.com", Ok("www.example.com"))]
     #[case::deviation_eszett("faß.de", Ok("xn--fa-hia.de"))]
     #[case::deviation_sigma("βόλος.com", Ok("xn--nxasmm1c.com"))]
@@ -296,11 +302,21 @@ mod tests {
     #[case::emoji("🦀.☕", Ok(()))]
     #[case::empty("", Ok(()))]
     #[case::valid("www.¡hola!.com.mx", Ok(()))]
-    #[case::mapped("www.Ç.com", Err(ToAsciiError::InvalidCharacter))]
-    #[case::invalid("\u{10FFF}", Err(ToAsciiError::InvalidCharacter))]
-    #[case::ignored("www.exam\u{00ad}ple.com", Err(ToAsciiError::InvalidCharacter))]
+    #[case::mapped("www.Ç.com", Err(ToAsciiError::InvalidCharacter(Some('Ç'))))]
+    #[case::invalid("\u{10fff}", Err(ToAsciiError::InvalidCharacter(Some('\u{10fff}'))))]
+    #[case::ignored("www.exam\u{00ad}ple.com", Err(ToAsciiError::InvalidCharacter(Some('\u{00ad}'))))]
     #[case::deviation("faß.de", Ok(()))]
     fn test_validate(#[case] input: &str, #[case] expected: Result<(), ToAsciiError>) {
         assert_eq!(validate(input), expected);
+    }
+
+    #[rstest]
+    #[case::bloss("Bloß.de", Ok("bloß.de"))]
+    #[case::bloss("BLOẞ.de", Ok("bloß.de"))]
+    #[case::dot("a⒈com", Err(ToAsciiError::InvalidCharacter(Some('⒈'))))]
+    #[case::japanese("日本語。ＪＰ", Ok("日本語.jp"))]
+    #[case::emoji("☕.us", Ok("☕.us"))]
+    fn test_map(#[case] input: &str, #[case] expected: Result<&str, ToAsciiError>) {
+        assert_eq!(map_validate(input).as_deref(), expected.as_deref());
     }
 }
